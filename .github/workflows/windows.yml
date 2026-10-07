@@ -1,0 +1,74 @@
+name: Windows build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: windows-release
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test source and real desktop widgets
+        run: python -m unittest discover -s tests -v
+      - name: Install packaging tool
+        run: python -m pip install PyInstaller==6.22.0
+      - name: Build portable Windows applications
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --noupx --windowed --name TempSweep gui.py
+          python -m PyInstaller --noconfirm --clean --onefile --noupx --console --name TempSweep-CLI tempsweep.py
+      - name: Test packaged behaviour on disposable files
+        run: python windows_smoke.py
+      - name: Check the packaged desktop window
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath .\dist\TempSweep.exe -PassThru
+          $window = $null
+          try {
+            for ($attempt = 0; $attempt -lt 45; $attempt++) {
+              $ids = @($process.Id)
+              $ids += @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($process.Id)" | Select-Object -ExpandProperty ProcessId)
+              $window = Get-Process -Id $ids -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq 'TempSweep 0.1.0' } | Select-Object -First 1
+              if ($window) { break }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $window) { throw 'The packaged desktop window did not appear.' }
+            Write-Host "Verified window: $($window.MainWindowTitle)"
+            if (-not $window.CloseMainWindow()) { throw 'Could not close the desktop window normally.' }
+            if (-not $process.WaitForExit(15000)) { throw 'The desktop app did not exit after closing its window.' }
+            if ($process.ExitCode -ne 0) { throw "Desktop app failed with exit code $($process.ExitCode)" }
+          } finally {
+            if ($window -and -not $window.HasExited) { Stop-Process -Id $window.Id -ErrorAction SilentlyContinue }
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue }
+          }
+      - name: Package portable download
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, WINDOWS-README.txt -Destination dist
+          Get-ChildItem dist\*.exe | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Compress-Archive -Path dist\* -DestinationPath TempSweep-0.1.0-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TempSweep-0.1.0-Windows-x64
+          path: TempSweep-0.1.0-Windows-x64.zip
+          if-no-files-found: error
+      - name: Publish tested release downloads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python package_source.py TempSweep 0.1.0
+          gh release view v0.1.0 --repo ${{ github.repository }} *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Release v0.1.0 already exists; preserving published downloads.'
+            exit 0
+          }
+          gh release create v0.1.0 TempSweep-0.1.0-Windows-x64.zip TempSweep-0.1.0-Source.zip --repo ${{ github.repository }} --target ${{ github.sha }} --title 'TempSweep 0.1.0' --notes-file RELEASE-NOTES.md --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
