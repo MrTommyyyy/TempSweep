@@ -206,7 +206,9 @@ def scan_targets(targets, older_than=7, *, now=None, cancel=None, progress=None,
     if len({t.key for t in targets}) != len(targets):
         raise ValueError("Category keys must be unique.")
     created = time.time() if now is None else now
-    cutoff = int((created - older_than * DAY) * 1_000_000_000)
+    # FILETIME stores 100 ns ticks. Round toward keeping the boundary file,
+    # so an exact cutoff survives Windows timestamp precision unchanged.
+    cutoff = (int(created * 1_000_000_000) // 100) * 100 - older_than * DAY * 1_000_000_000
     files, issues, issue_count, kept, entries = [], [], 0, 0, 0
     seen_roots = []
 
