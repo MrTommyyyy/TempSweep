@@ -29,7 +29,9 @@ class WindowsTests(unittest.TestCase):
     def test_exclusive_open_file_is_skipped_then_deletes_after_release(self):
         plan = ts.scan_targets([self.target])
         api = ts._kernel_api()
-        handle = api.CreateFileW(str(self.path), 0x80, 0, None, 3, 0, None)
+        # Attribute-only handles do not impose a data sharing lock. Open the
+        # contents with GENERIC_READ and no sharing to exercise a real lock.
+        handle = api.CreateFileW(str(self.path), 0x80000000, 0, None, 3, 0, None)
         self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
         try:
             result = ts.cleanup(plan, confirmed=True)
